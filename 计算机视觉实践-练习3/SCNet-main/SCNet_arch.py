@@ -1,13 +1,60 @@
 import torch
 from torch import nn as nn
 from torch.nn import functional as F
+from torch.nn import init as init
+from torch.nn.modules.batchnorm import _BatchNorm
+from PIL import Image
+import torchvision.transforms as transforms
 
-from basicsr.utils.registry import ARCH_REGISTRY
-from basicsr.archs.arch_util import default_init_weights, make_layer
+
+def default_init_weights(module_list, scale=1, bias_fill=0, **kwargs):
+    """Initialize network weights.
+
+    Args:
+        module_list (list[nn.Module] | nn.Module): Modules to be initialized.
+        scale (float): Scale initialized weights, especially for residual
+            blocks. Default: 1.
+        bias_fill (float): The value to fill bias. Default: 0
+        kwargs (dict): Other arguments for initialization function.
+    """
+    if not isinstance(module_list, list):
+        module_list = [module_list]
+    for module in module_list:
+        for m in module.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, **kwargs)
+                m.weight.data *= scale
+                if m.bias is not None:
+                    m.bias.data.fill_(bias_fill)
+            elif isinstance(m, nn.Linear):
+                init.kaiming_normal_(m.weight, **kwargs)
+                m.weight.data *= scale
+                if m.bias is not None:
+                    m.bias.data.fill_(bias_fill)
+            elif isinstance(m, _BatchNorm):
+                init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    m.bias.data.fill_(bias_fill)
+
+
+def make_layer(basic_block, num_basic_block, **kwarg):
+    """Make layers by stacking the same blocks.
+
+    Args:
+        basic_block (nn.module): nn.module class for basic block.
+        num_basic_block (int): number of blocks.
+
+    Returns:
+        nn.Sequential: Stacked blocks in nn.Sequential.
+    """
+    layers = []
+    for _ in range(num_basic_block):
+        layers.append(basic_block(**kwarg))
+    return nn.Sequential(*layers)
 
 
 class Shift8(nn.Module):
-    def __init__(self, groups=4, stride=1, mode='constant') -> None:
+    def __init__(self, groups=4, stride=1, mode="constant") -> None:
         super().__init__()
         self.g = groups
         self.mode = mode
@@ -22,17 +69,45 @@ class Shift8(nn.Module):
 
         cx, cy = self.stride, self.stride
         stride = self.stride
-        out[:,0*self.g:1*self.g, :, :] = pad_x[:, 0*self.g:1*self.g, cx-stride:cx-stride+h, cy:cy+w]
-        out[:,1*self.g:2*self.g, :, :] = pad_x[:, 1*self.g:2*self.g, cx+stride:cx+stride+h, cy:cy+w]
-        out[:,2*self.g:3*self.g, :, :] = pad_x[:, 2*self.g:3*self.g, cx:cx+h, cy-stride:cy-stride+w]
-        out[:,3*self.g:4*self.g, :, :] = pad_x[:, 3*self.g:4*self.g, cx:cx+h, cy+stride:cy+stride+w]
+        out[:, 0 * self.g : 1 * self.g, :, :] = pad_x[
+            :, 0 * self.g : 1 * self.g, cx - stride : cx - stride + h, cy : cy + w
+        ]
+        out[:, 1 * self.g : 2 * self.g, :, :] = pad_x[
+            :, 1 * self.g : 2 * self.g, cx + stride : cx + stride + h, cy : cy + w
+        ]
+        out[:, 2 * self.g : 3 * self.g, :, :] = pad_x[
+            :, 2 * self.g : 3 * self.g, cx : cx + h, cy - stride : cy - stride + w
+        ]
+        out[:, 3 * self.g : 4 * self.g, :, :] = pad_x[
+            :, 3 * self.g : 4 * self.g, cx : cx + h, cy + stride : cy + stride + w
+        ]
 
-        out[:,4*self.g:5*self.g, :, :] = pad_x[:, 4*self.g:5*self.g, cx+stride:cx+stride+h, cy+stride:cy+stride+w]
-        out[:,5*self.g:6*self.g, :, :] = pad_x[:, 5*self.g:6*self.g, cx+stride:cx+stride+h, cy-stride:cy-stride+w]
-        out[:,6*self.g:7*self.g, :, :] = pad_x[:, 6*self.g:7*self.g, cx-stride:cx-stride+h, cy+stride:cy+stride+w]
-        out[:,7*self.g:8*self.g, :, :] = pad_x[:, 7*self.g:8*self.g, cx-stride:cx-stride+h, cy-stride:cy-stride+w]
+        out[:, 4 * self.g : 5 * self.g, :, :] = pad_x[
+            :,
+            4 * self.g : 5 * self.g,
+            cx + stride : cx + stride + h,
+            cy + stride : cy + stride + w,
+        ]
+        out[:, 5 * self.g : 6 * self.g, :, :] = pad_x[
+            :,
+            5 * self.g : 6 * self.g,
+            cx + stride : cx + stride + h,
+            cy - stride : cy - stride + w,
+        ]
+        out[:, 6 * self.g : 7 * self.g, :, :] = pad_x[
+            :,
+            6 * self.g : 7 * self.g,
+            cx - stride : cx - stride + h,
+            cy + stride : cy + stride + w,
+        ]
+        out[:, 7 * self.g : 8 * self.g, :, :] = pad_x[
+            :,
+            7 * self.g : 8 * self.g,
+            cx - stride : cx - stride + h,
+            cy - stride : cy - stride + w,
+        ]
 
-        #out[:, 8*self.g:, :, :] = pad_x[:, 8*self.g:, cx:cx+h, cy:cy+w]
+        # out[:, 8*self.g:, :, :] = pad_x[:, 8*self.g:, cx:cx+h, cy:cy+w]
         return out
 
 
@@ -57,7 +132,7 @@ class ResidualBlockShift(nn.Module):
         self.conv1 = nn.Conv2d(num_feat, num_feat, kernel_size=1)
         self.conv2 = nn.Conv2d(num_feat, num_feat, kernel_size=1)
         self.relu = nn.ReLU(inplace=True)
-        self.shift = Shift8(groups=num_feat//8, stride=1)
+        self.shift = Shift8(groups=num_feat // 8, stride=1)
 
         if not pytorch_init:
             default_init_weights([self.conv1, self.conv2], 0.1)
@@ -67,7 +142,7 @@ class ResidualBlockShift(nn.Module):
         out = self.conv2(self.relu(self.shift(self.conv1(x))))
         return identity + out * self.res_scale
 
-    
+
 class UpShiftPixelShuffle(nn.Module):
     def __init__(self, dim, scale=2) -> None:
         super().__init__()
@@ -75,32 +150,35 @@ class UpShiftPixelShuffle(nn.Module):
         self.up_layer = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=1),
             nn.LeakyReLU(0.02),
-            Shift8(groups=dim//8),
-            nn.Conv2d(dim, dim*scale*scale, kernel_size=1),
-            nn.PixelShuffle(upscale_factor=scale)
+            Shift8(groups=dim // 8),
+            nn.Conv2d(dim, dim * scale * scale, kernel_size=1),
+            nn.PixelShuffle(upscale_factor=scale),
         )
+
     def forward(self, x):
         out = self.up_layer(x)
         return out
 
+
 class UpShiftMLP(nn.Module):
-    def __init__(self, dim, mode='bilinear', scale=2) -> None:
+    def __init__(self, dim, mode="bilinear", scale=2) -> None:
         super().__init__()
 
         self.up_layer = nn.Sequential(
             nn.Upsample(scale_factor=scale, mode=mode, align_corners=False),
             nn.Conv2d(dim, dim, kernel_size=1),
             nn.LeakyReLU(0.02),
-            Shift8(groups=dim//8),
-            nn.Conv2d(dim, dim, kernel_size=1)
+            Shift8(groups=dim // 8),
+            nn.Conv2d(dim, dim, kernel_size=1),
         )
+
     def forward(self, x):
         out = self.up_layer(x)
         return out
 
-@ARCH_REGISTRY.register()
+
 class SCNet(nn.Module):
-    """ SCNet (https://arxiv.org/abs/2307.16140) based on the Modified SRResNet.
+    """SCNet (https://arxiv.org/abs/2307.16140) based on the Modified SRResNet.
     Args:
         num_in_ch (int): Channel number of inputs. Default: 3.
         num_out_ch (int): Channel number of outputs. Default: 3.
@@ -137,7 +215,9 @@ class SCNet(nn.Module):
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
         # initialization
-        default_init_weights([self.conv_first, self.upconv1, self.conv_hr, self.conv_last], 0.1)
+        default_init_weights(
+            [self.conv_first, self.upconv1, self.conv_hr, self.conv_last], 0.1
+        )
         if self.upscale == 4:
             default_init_weights(self.upconv2, 0.1)
 
@@ -156,11 +236,40 @@ class SCNet(nn.Module):
             out = self.lrelu(self.pixel_shuffle(self.upconv3(out)))
 
         out = self.conv_last(self.lrelu(self.conv_hr(out)))
-        base = F.interpolate(x, scale_factor=self.upscale, mode='bilinear', align_corners=False)
+        base = F.interpolate(
+            x, scale_factor=self.upscale, mode="bilinear", align_corners=False
+        )
         out += base
         return out
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     model = SCNet(upscale=4)
-    load_dict = torch.load('SCNet-T-x4.pth')
-    model.load_state_dict(load_dict['params'])
+    load_dict = torch.load("SCNet-T-D64B16.pth")
+    model.load_state_dict(load_dict["params"])
+    model.eval()
+
+    # 图像预处理
+    image = Image.open("Set5/LR/headx4.png")
+    # normalize = transforms.Normalize(
+    #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    # )
+    transform = transforms.Compose(
+        [
+            transforms.Resize((image.size[1], image.size[0])),  # 假设upscale为4
+            transforms.ToTensor(),
+            # normalize,
+        ]
+    )
+    image = transform(image).unsqueeze(0)
+    print(image.shape)
+    print(1)
+    # 进行超分辨率处理
+    with torch.no_grad():
+        output = model(image)
+
+    # 将输出转换为图像
+    print(2)
+    output_image = transforms.ToPILImage()(output.squeeze(0))
+    output_image.save("Set5/SR/headx4.png")
+    output_image.show()
