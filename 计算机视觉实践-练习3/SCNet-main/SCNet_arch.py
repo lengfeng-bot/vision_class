@@ -243,33 +243,44 @@ class SCNet(nn.Module):
         return out
 
 
+import os
+
 if __name__ == "__main__":
     model = SCNet(upscale=4)
     load_dict = torch.load("SCNet-T-D64B16.pth")
     model.load_state_dict(load_dict["params"])
     model.eval()
 
-    # 图像预处理
-    image = Image.open("Set5/LR/headx4.png")
-    # normalize = transforms.Normalize(
-    #     mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-    # )
-    transform = transforms.Compose(
-        [
-            transforms.Resize((image.size[1], image.size[0])),  # 假设upscale为4
-            transforms.ToTensor(),
-            # normalize,
-        ]
-    )
-    image = transform(image).unsqueeze(0)
-    print(image.shape)
-    print(1)
-    # 进行超分辨率处理
-    with torch.no_grad():
-        output = model(image)
+    # 设置输入输出文件夹路径
+    input_folder = "Set5/LR"
+    output_folder = "Set5/SR2"
 
-    # 将输出转换为图像
-    print(2)
-    output_image = transforms.ToPILImage()(output.squeeze(0))
-    output_image.save("Set5/SR/headx4.png")
-    output_image.show()
+    # 创建输出文件夹
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # 遍历输入文件夹中的所有PNG图片
+    for image_file in os.listdir(input_folder):
+        if image_file.endswith(".png"):
+            # 图像预处理
+            image_path = os.path.join(input_folder, image_file)
+            image = Image.open(image_path)
+            transform = transforms.Compose(
+                [
+                    transforms.Resize(
+                        (image.size[1] * 4, image.size[0] * 4)
+                    ),  # 假设upscale为4
+                    transforms.ToTensor(),
+                ]
+            )
+            image = transform(image).unsqueeze(0)
+
+            # 进行超分辨率处理
+            with torch.no_grad():
+                output = model(image)
+
+            # 将输出转换为图像
+            output_image = transforms.ToPILImage()(output.squeeze(0))
+            output_image_path = os.path.join(output_folder, image_file)
+            output_image.save(output_image_path)
+            # output_image.show()

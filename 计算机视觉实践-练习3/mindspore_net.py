@@ -237,3 +237,42 @@ class SCNet(nn.Cell):
         base = nn.ResizeBilinear()(x, scale_factor=self.upscale)
         out += base
         return out
+
+
+import os
+from mindspore import load_checkpoint, load_param_into_net
+from PIL import Image
+
+if __name__ == "__main__":
+    # 初始化模型
+    model = SCNet(upscale=4)
+    # 加载预训练的模型权重
+    param_dict = load_checkpoint("SCNet-T-D64B16.ckpt")
+    load_param_into_net(model, param_dict)
+    model.set_train(False)
+
+    # 设置输入输出文件夹路径
+    input_folder = "Set5/LR"
+    output_folder = "Set5/SR2"
+
+    # 创建输出文件夹
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # 遍历输入文件夹中的所有PNG图片
+    for image_file in os.listdir(input_folder):
+        if image_file.endswith(".png"):
+            # 图像预处理
+            image_path = os.path.join(input_folder, image_file)
+            image = Image.open(image_path)
+            # MindSpore没有transforms.Compose，需要手动进行转换
+            image = image.resize((image.size[1] * 4, image.size[0] * 4))
+            image = mindspore.Tensor(np.array(image).astype(np.float32) / 255.0)
+
+            # 进行超分辨率处理
+            output = model.predict(image)
+
+            # 将输出转换为图像
+            output_image = Image.fromarray((output.asnumpy() * 255).astype(np.uint8))
+            output_image_path = os.path.join(output_folder, image_file)
+            output_image.save(output_image_path)
